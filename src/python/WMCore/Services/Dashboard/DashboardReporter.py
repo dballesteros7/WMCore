@@ -6,10 +6,11 @@ Utilities for reporting information to the dashboard
 
 import time
 import logging
+import threading
 
-from WMCore import __version__
+from WMCore                                 import __version__
 from WMCore.WMException                     import WMException
-from WMCore.DataStructs.WMObject import WMObject
+from WMCore.DataStructs.WMObject            import WMObject
 from WMCore.Services.Dashboard.DashboardAPI import apmonSend, apmonFree
 
 class DashboardReporterException(WMException):
@@ -18,9 +19,30 @@ class DashboardReporterException(WMException):
 
     Something's wrong when pushing the information out.
     """
-
     pass
 
+def threaded(func):
+    """
+    _threaded_
+
+    Decorator which indicates a method that is run in
+    a separate thread
+    """
+    def threadWrapper(*args, **kwargs):
+        """
+        _threadWrapper_
+
+        Actual method wrapper for the decorator
+        """
+        try:
+            newThread = threading.Thread(target = func, args = args, kwargs = kwargs)
+            newThread.start()
+        except RuntimeError, rex:
+            msg = "Could not start reporting thread\n"
+            msg += "Error: %s" % str(rex)
+            raise DashboardReporterException(msg)
+        return
+    return threadWrapper
 
 class DashboardReporter(WMObject):
     """
@@ -32,22 +54,27 @@ class DashboardReporter(WMObject):
     def __init__(self, config):
         self.config = config
 
-        #Have to default this to the local host otherwise a lot of unit tests
-        #die
         if hasattr(config, 'DashboardReporter'):
             self.destHost = getattr(self.config.DashboardReporter, 'dashboardHost',
                                '127.0.0.1')
             self.destPort = getattr(self.config.DashboardReporter, 'dashboardPort',
                                8884)
+            self.reportsPerCycle = getattr(self.config.DashboardReporter, 'reportsPerCycle',
+                                     500)
+            self.reportInterval = getattr(self.config.DashboardReporter, 'reportInterval',
+                                     1)
         else:
             self.destHost = '127.0.0.1'
             self.destPort = 8884
+            self.reportsPerCycle = 500
+            self.reportInterval = 1
 
         self.serverreport = [self.destHost + ':' + str(self.destPort)]
 
         self.taskPrefix = 'wmagent_'
         self.tsFormat = '%Y-%m-%d %H:%M:%S'
 
+    @threaded
     def handleCreated(self, jobs):
         """
         _handleCreated_
@@ -68,40 +95,45 @@ class DashboardReporter(WMObject):
         """
         logging.info ("Handling %d created jobs" % len(jobs))
         logging.debug ("Handling created jobs: %s" % jobs)
+        while len(jobs):
+            chunkList = jobs[:self.reportsPerCycle]
+            jobs = jobs[self.reportsPerCycle:]
+            for job in chunkList:
+                logging.debug("Sending info for job %s" % str(job))
 
-        for job in jobs:
-            logging.debug("Sending info for job %s" % str(job))
+                package = {}
+                package['MessageType']      = 'JobMeta'
+                package['taskId']           = self.taskPrefix + \
+                                                   job['workflow']
+                package['jobId']            = '%s_%i' % (job['name'],
+                                                        job['retry_count'])
+                package['TaskType']         = job['taskType']
+                package['JobType']          = job['jobType']
+                package['NEventsToProcess'] = job.get('nEventsToProc',
+                                                        'NotAvailable')
 
-            package = {}
-            package['MessageType']      = 'JobMeta'
-            package['taskId']           = self.taskPrefix + \
-                                               job['workflow']
-            package['jobId']            = '%s_%i' % (job['name'],
-                                                    job['retry_count'])
-            package['TaskType']         = job['taskType']
-            package['JobType']          = job['jobType']
-            package['NEventsToProcess'] = job.get('nEventsToProc',
-                                                    'NotAvailable')
+                logging.debug("Sending: %s" % str(package))
+                result = apmonSend(taskid = package['taskId'],
+                                   jobid = package['jobId'],
+                                   params = package,
+                                   logr = logging,
+                                   apmonServer = self.serverreport)
 
-            logging.debug("Sending: %s" % str(package))
-            result = apmonSend(taskid = package['taskId'],
-                               jobid = package['jobId'],
-                               params = package,
-                               logr = logging,
-                               apmonServer = self.serverreport)
-            if result != 0:
-                msg = "Error %i sending info for submitted job %s via UDP\n" \
-                      % (result, job['name'])
-                msg += "Ignoring"
-                logging.error(msg)
-                logging.debug("Package sent: %s\n" % package)
-                logging.debug("Host info: host %s, port %s" \
-                              % (self.destHost,
-                                 self.destPort))
+                if result != 0:
+                    msg = "Error %i sending info for submitted job %s via UDP\n" \
+                          % (result, job['name'])
+                    msg += "Ignoring"
+                    logging.error(msg)
+                    logging.debug("Package sent: %s\n" % package)
+                    logging.debug("Host info: host %s, port %s" \
+                                  % (self.destHost,
+                                     self.destPort))
             apmonFree()
+            time.sleep(self.reportInterval)
 
         return
 
+    @threaded
     def handleJobStatusChange(self, jobs, statusValue, statusMessage):
         """
         _handleJobStatusChange_
@@ -121,44 +153,48 @@ class DashboardReporter(WMObject):
         logging.info("Handling %d jobs" % len(jobs))
         logging.debug("Handling jobs: %s" % jobs)
 
-        for job in jobs:
-            logging.debug("Sending info for job %s" % str(job))
+        while len(jobs):
+            chunkList = jobs[:self.reportsPerCycle]
+            jobs = jobs[self.reportsPerCycle:]
+            for job in chunkList:
+                logging.debug("Sending info for job %s" % str(job))
 
-            package = {}
-            package['MessageType']       = 'JobStatus'
-            package['jobId']             = '%s_%i' % (job['name'],
-                                                    job['retry_count'])
-            package['taskId']            = self.taskPrefix + job['workflow']
-            package['StatusValue']       = statusValue
-            package['StatusValueReason'] = statusMessage
-            package['StatusEnterTime']   = time.strftime(self.tsFormat,
-                                        time.gmtime())
-            package['StatusDestination'] = job.get('location',
-                                                   'NotAvailable')
+                package = {}
+                package['MessageType']       = 'JobStatus'
+                package['jobId']             = '%s_%i' % (job['name'],
+                                                        job['retry_count'])
+                package['taskId']            = self.taskPrefix + job['workflow']
+                package['StatusValue']       = statusValue
+                package['StatusValueReason'] = statusMessage
+                package['StatusEnterTime']   = time.strftime(self.tsFormat,
+                                                             time.gmtime())
+                package['StatusDestination'] = job.get('location',
+                                                       'NotAvailable')
 
-            if job.get('plugin', None):
-                package['scheduler']     = job['plugin'][:-6]
+                if job.get('plugin', None):
+                    package['scheduler']     = job['plugin'][:-6]
 
-            logging.debug("Sending: %s" % str(package))
-            result = apmonSend(taskid = package['taskId'],
-                               jobid = package['jobId'],
-                               params = package,
-                               logr = logging,
-                               apmonServer = self.serverreport)
+                logging.debug("Sending: %s" % str(package))
+                result = apmonSend(taskid = package['taskId'],
+                                   jobid = package['jobId'],
+                                   params = package,
+                                   logr = logging,
+                                   apmonServer = self.serverreport)
 
-            if result != 0:
-                msg =  "Error %i sending info for submitted job %s via UDP\n" \
-                        % (result, job['name'])
-                msg += "Ignoring"
-                logging.error(msg)
-                logging.debug("Package sent: %s\n" % package)
-                logging.debug("Host info: host %s, port %s" \
-                              % (self.destHost,
-                                 self.destPort))
+                if result != 0:
+                    msg =  "Error %i sending info for submitted job %s via UDP\n" \
+                            % (result, job['name'])
+                    msg += "Ignoring"
+                    logging.error(msg)
+                    logging.debug("Package sent: %s\n" % package)
+                    logging.debug("Host info: host %s, port %s" \
+                                  % (self.destHost,
+                                     self.destPort))
+
+                if 'fwjr' in job:
+                    self.handleSteps(job)
             apmonFree()
-
-            if 'fwjr' in job:
-                self.handleSteps(job)
+            time.sleep(self.reportInterval)
 
         return
 
@@ -340,7 +376,7 @@ class DashboardReporter(WMObject):
         Add a task to the Dashboard, jobs must contain the following information
         about the task:
             application -> CMSSW release
-            tool -> JobSubmission tool (like Condor? or WMAgent)
+            tool -> JobSubmission tool
             JSToolVersion -> 'tool' version
             TaskType -> Type of activity
             datasetFull -> Input dataset

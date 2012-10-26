@@ -9,11 +9,17 @@ Created on Fri Jun  8 11:21:07 2012
 """
 
 import unittest
+import os
+import random
 
 from WMCore.Services.Dashboard.DashboardReporter import DashboardReporter
 from WMCore.DataStructs.Job import Job
+from WMCore.Configuration import Configuration
+from WMCore.Services.UUID import makeUUID
 
 from WMCore_t.Services_t.Dashboard_t.reportSamples import ProcessingSample, MergeSample, ErrorSample
+
+from nose.plugins.attrib import attr
 
 class DashboardReporterTest(unittest.TestCase):
     """
@@ -124,7 +130,6 @@ class DashboardReporterTest(unittest.TestCase):
         self.assertEqual(self.trimNoneValues(perfInfo), {},
                          'stageOut1 performance info is not empty')
 
-
     def testEventInformationReport(self):
         """
         _testEventInformationReport_
@@ -163,3 +168,42 @@ class DashboardReporterTest(unittest.TestCase):
                                                       self.errorReport)
         self.assertEqual(eventInfo, {},
                          'Error report event info is not empty')
+
+    @attr('integration')
+    def testDashboardLoad(self):
+        """
+        _testDashboardLoad_
+
+        Attempt to send a gazillion job created messages
+        to the dashboard, doesn't really verify anything.
+        This should only be run manually in coordination
+        with a receiving dashboard server to test
+        limits in number of messages and frequency
+        """
+        configuration = Configuration()
+        reportConfig = configuration.section_('DashboardReporter')
+        reportConfig.dashboardHost = os.environ.get('DASHBOARD_HOST', '127.0.0.1')
+        reportConfig.dashboardPort = os.environ.get('DASHBOARD_PORT', 8884)
+        reportConfig.reportsPerCycle = 250
+        reportConfig.reportInterval = 1
+
+        dashboardInstance = DashboardReporter(configuration)
+        nJobs = 10000
+        uuid = makeUUID()
+        jobList = []
+
+        for idx in range(1, nJobs):
+            template = {'workflow' : 'dashboard_LOAD_TEST',
+                        'retry_count' : 0,
+                        'taskType' : 'Test',
+                        'jobType' : 'AlsoTest',
+                        'nEventsToProc' : random.randint(1, 2000),
+                        'name' : '%s-%d' % (uuid, idx)
+                        }
+            jobList.append(template)
+        dashboardInstance.handleCreated(jobList)
+
+        return
+
+if __name__ == '__main__':
+    unittest.main()
