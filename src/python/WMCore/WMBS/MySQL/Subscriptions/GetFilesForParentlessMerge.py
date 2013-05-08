@@ -47,7 +47,8 @@ class GetFilesForParentlessMerge(DBFormatter):
                  wmbs_fileset_files.fileid = wmbs_sub_files_available.fileid
                INNER JOIN wmbs_workflow ON
                  wmbs_workflow.id = wmbs_subscription.workflow
-             WHERE wmbs_sub_files_available.subscription = :p_1
+             WHERE wmbs_sub_files_available.subscription = :p_1 AND
+                   wmbs_file_details.events != 0
              GROUP BY wmbs_file_details.id,
                       wmbs_file_details.events,
                       wmbs_file_details.filesize,
@@ -58,7 +59,31 @@ class GetFilesForParentlessMerge(DBFormatter):
                       wmbs_workflow.injected
              """
 
+    transferSQL = """
+                 INSERT IGNORE INTO wmbs_sub_files_failed
+                 (subscription, fileid)
+                 SELECT subscription, fileid
+                 FROM wmbs_sub_files_available
+                 INNER JOIN wmbs_file_details ON
+                 wmbs_file_details.id = wmbs_sub_files_available.fileid
+                 WHERE wmbs_sub_files_available.subscription = :p_1 AND
+                       wmbs_file_details.events = 0
+                 """
+
+    discardSQL = """
+                 DELETE FROM wmbs_sub_files_available
+                 WHERE wmbs_sub_files_available.subscription = :p_1 AND
+                       (SELECT wmbs_file_details.events FROM
+                        wmbs_file_details
+                        WHERE id = wmbs_sub_files_available.fileid) = 0
+                 """
+
     def execute(self, subscription = None, conn = None, transaction = False):
         results = self.dbi.processData(self.sql, {"p_1": subscription}, conn = conn,
                                       transaction = transaction)
+        self.dbi.processData(self.transferSQL, {"p_1": subscription}, conn = conn,
+                                      transaction = transaction)
+        self.dbi.processData(self.discardSQL, {"p_1": subscription}, conn = conn,
+                                      transaction = transaction)
+
         return self.formatDict(results)
