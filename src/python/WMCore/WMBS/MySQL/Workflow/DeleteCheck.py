@@ -13,7 +13,8 @@ from WMCore.Database.DBFormatter import DBFormatter
 
 class DeleteCheck(DBFormatter):
     sql = """DELETE FROM wmbs_workflow WHERE id = :workflow AND
-           NOT EXISTS (SELECT id FROM wmbs_subscription WHERE workflow = :workflow AND id != :subscription)"""
+             NOT EXISTS (SELECT id FROM wmbs_subscription WHERE workflow = :workflow
+             AND id != :subscription)"""
 
     def execute(self, workid = None, subid = None, conn = None, transaction = False):
         self.dbi.processData(self.sql, {'workflow': workid, 'subscription': subid},

@@ -482,14 +482,10 @@ class Subscription(WMBSBase, WMSubscription):
                 # if we have unused files, of course
                 continue
 
-            parent = self.daofactory(classname = "Files.DeleteParentCheck")
             action = self.daofactory(classname = "Files.DeleteCheck")
 
             if len(filesetFiles) <= self.bulkDeleteLimit:
                 existingTransaction = self.beginTransaction()
-                parent.execute(file = filesetFiles, fileset = fileset.id,
-                               conn = self.getDBConn(),
-                               transaction = self.existingTransaction())
                 action.execute(file = filesetFiles, fileset = fileset.id,
                                conn = self.getDBConn(),
                                transaction = self.existingTransaction())
@@ -499,9 +495,6 @@ class Subscription(WMBSBase, WMSubscription):
                     existingTransaction = self.beginTransaction()
                     toDelete     = filesetFiles[:self.bulkDeleteLimit]
                     filesetFiles = filesetFiles[self.bulkDeleteLimit:]
-                    parent.execute(file = toDelete, fileset = fileset.id,
-                                   conn = self.getDBConn(),
-                                   transaction = self.existingTransaction())
                     action.execute(file = toDelete, fileset = fileset.id,
                                    conn = self.getDBConn(),
                                    transaction = self.existingTransaction())

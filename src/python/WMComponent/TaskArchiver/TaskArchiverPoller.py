@@ -199,7 +199,6 @@ class TaskArchiverPoller(BaseWorkerThread):
             self.workQueue = None
 
         self.maxProcessSize    = getattr(self.config.TaskArchiver, 'maxProcessSize', 250)
-        self.timeout           = getattr(self.config.TaskArchiver, "timeOut", None)
         self.nOffenders        = getattr(self.config.TaskArchiver, 'nOffenders', 3)
         self.useReqMgrForCompletionCheck   = getattr(self.config.TaskArchiver, 'useReqMgrForCompletionCheck', True)
         self.uploadPublishInfo = getattr(self.config.TaskArchiver, 'uploadPublishInfo', False)
@@ -307,7 +306,7 @@ class TaskArchiverPoller(BaseWorkerThread):
         #Get the subscriptions that are now finished and mark them as such
         logging.info("Polling for finished subscriptions")
         finishedSubscriptions = self.daoFactory(classname = "Subscriptions.GetAndMarkNewFinishedSubscriptions")
-        finishedSubscriptions.execute(self.stateID, timeOut = self.timeout)
+        finishedSubscriptions.execute(self.stateID)
 
         myThread.transaction.commit()
 
@@ -329,64 +328,61 @@ class TaskArchiverPoller(BaseWorkerThread):
 
         #Only delete those where the upload and notification succeeded
         logging.info("Found %d candidate workflows for deletion" % len(finishedwfs))
-        centralCouchAlive = True
         try:
             #TODO: need to enable when reqmgr2 -wmstats is ready
             #abortedWorkflows = self.reqmgrCouchDBWriter.workflowsByStatus(["aborted"], format = "dict");
             abortedWorkflows = self.centralCouchDBWriter.workflowsByStatus(["aborted"], format = "dict");
         except Exception, ex:
-           centralCouchAlive = False
-           logging.error("we will try again when remote couch server comes back\n%s" % str(ex))
-        
-        if centralCouchAlive:
-            wfsToDelete = {}
-            for workflow in finishedwfs:
-                try:
-                    #Upload summary to couch
-                    spec = retrieveWMSpec(wmWorkloadURL = finishedwfs[workflow]["spec"])
-                    if not spec:
-                        raise Exception(msg = "Couldn't load spec from %s" % workflow[1])
-                    self.archiveWorkflowSummary(spec = spec)
-    
-                    #Notify the WorkQueue, if there is one
-                    if self.workQueue != None:
-                        subList = []
-                        for l in finishedwfs[workflow]["workflows"].values():
-                            subList.extend(l)
-                        self.notifyWorkQueue(subList)
-                    
-                    #Now we now the workflow as a whole is gone, we can delete the information from couch
+            logging.error("We will try again when the remote couch server comes back.\n Error: %s" % str(ex))
+            return
+
+        wfsToDelete = {}
+        for workflow in finishedwfs:
+            try:
+                #Upload summary to couch
+                spec = retrieveWMSpec(wmWorkloadURL = finishedwfs[workflow]["spec"])
+                if not spec:
+                    raise Exception(msg = "Couldn't load spec from %s" % workflow[1])
+                self.archiveWorkflowSummary(spec = spec)
+
+                #Notify the WorkQueue, if there is one
+                if self.workQueue is not None:
+                    subList = []
+                    for l in finishedwfs[workflow]["workflows"].values():
+                        subList.extend(l)
+                    self.notifyWorkQueue(subList)
+
+                #Now we now the workflow as a whole is gone, we can delete the information from couch
+                if not self.useReqMgrForCompletionCheck:
+                    self.wmstatsCouchDB.updateRequestStatus(workflow, "completed")
+                    logging.info("Status updated to completed %s" % workflow)
+
+                if workflow in abortedWorkflows:
+                    #TODO: remove when reqmgr2-wmstats deployed
+                    newState =  "aborted-completed"
+                    self.centralCouchDBWriter.updateRequestStatus(workflow, newState)
+                    # update reqmgr workload document only request mgr is installed
                     if not self.useReqMgrForCompletionCheck:
-                        self.wmstatsCouchDB.updateRequestStatus(workflow, "completed")
-                        logging.info("status updated to completed %s" % workflow)
-    
-                    if workflow in abortedWorkflows:
-                        #TODO: remove when reqmgr2-wmstats deployed
-                        newState =  "aborted-completed"
-                        self.centralCouchDBWriter.updateRequestStatus(workflow, newState);
-                        # update reqmgr workload document only request mgr is installed
-                        if not self.useReqMgrForCompletionCheck:
-                            self.reqmgrSvc.updateRequestStatus(workflow, newState); 
-                            logging.info("status updated to %s : %s" % (newState, workflow))
-    
-                    wfsToDelete[workflow] = {"spec" : spec, "workflows": finishedwfs[workflow]["workflows"]}
-    
-                except TaskArchiverPollerException, ex:
-                    #Something didn't go well when notifying the workqueue, abort!!!
-                    logging.error(str(ex))
-                    self.sendAlert(1, msg = str(ex))
-                    continue
-                except Exception, ex:
-                    #Something didn't go well on couch, abort!!!
-                    msg = "Couldn't upload summary for workflow %s, will try again next time\n" % workflow
-                    msg += "Nothing will be deleted until the summary is in couch\n"
-                    msg += "Exception message: %s" % str(ex)
-                    print traceback.format_exc()
-                    logging.error(msg)
-                    self.sendAlert(3, msg = msg)
-                    continue
-    
-            self.killWorkflows(wfsToDelete)
+                        self.reqmgrSvc.updateRequestStatus(workflow, newState)
+                        logging.info("Status updated to %s : %s" % (newState, workflow))
+
+                wfsToDelete[workflow] = {"spec" : spec, "workflows": finishedwfs[workflow]["workflows"]}
+
+            except TaskArchiverPollerException, ex:
+                #Something didn't go well when notifying the workqueue, abort!!!
+                logging.error(str(ex))
+                self.sendAlert(1, msg = str(ex))
+                continue
+            except Exception, ex:
+                #Something didn't go well on couch, abort!!!
+                msg = "Couldn't upload summary for workflow %s, will try again next time\n" % workflow
+                msg += "Nothing will be deleted until the summary is in couch\n"
+                msg += "Exception message: %s" % str(ex)
+                logging.error(msg)
+                self.sendAlert(3, msg = msg)
+                continue
+
+        self.killWorkflows(wfsToDelete)
 
         return
 

@@ -1736,6 +1736,7 @@ class SubscriptionTest(unittest.TestCase):
                                 dbinterface = myThread.dbi)
         injected = daoFactory(classname = "Workflow.MarkInjectedWorkflows")
         injected.execute(names = ["wf001", "wf002", "wf003"], injected = True)
+
         #The first subscription is finished since the input fileset is closed and no jobs are present
         newFinishedDAO = daoFactory(classname = "Subscriptions.GetAndMarkNewFinishedSubscriptions")
         newFinishedDAO.execute(self.stateID)
@@ -1761,131 +1762,6 @@ class SubscriptionTest(unittest.TestCase):
                           "Error: Wrong number of finished subscriptions.")
 
         return
-
-    def testGetAndMarkNewFinishedSubscriptionsTimeout(self):
-        """
-        _testGetAndMarkNewFinishedSubscriptionsTimeout_
-
-        Verify that the finished subscriptions timeout works correctly and that
-        it only returns subscriptions for workflows that are fully injected.
-        """
-        (testSubscription, testFileset, testWorkflow,
-         testFileA, testFileB, testFileC) = self.createSubscriptionWithFileABC()
-
-        testFileset.markOpen(False)
-        testSubscription.create()
-        testSubscription.completeFiles([testFileA, testFileB, testFileC])
-        testJobGroup = JobGroup(subscription = testSubscription)
-        testJobGroup.create()
-
-        testJobA = Job(name = "testA")
-        testJobA.addFile(testFileA)
-        testJobA["location"] = "site1"
-        testJobA.create(testJobGroup)
-        testJobA["state"] = "complete"
-
-        changeJobState = self.daofactory(classname = "Jobs.ChangeState")
-        changeJobState.execute([testJobA])
-
-        newFinishedDAO = self.daofactory(classname = "Subscriptions.GetAndMarkNewFinishedSubscriptions")
-        finishedDAO = self.daofactory(classname = "Subscriptions.GetFinishedSubscriptions")
-        newFinishedDAO.execute(self.stateID)
-        finishedSubs = finishedDAO.execute()
-
-        #First we have a job not in cleanout and an uninjected workflow
-        self.assertEqual(len(finishedSubs), 0,
-                         "Error: There should be no finished subs.")
-
-        time.sleep(5)
-
-        #Even taking into account the delay, we have a not injected workflow
-        newFinishedDAO.execute(self.stateID, timeOut = 3)
-        finishedSubs = finishedDAO.execute()
-        self.assertEqual(len(finishedSubs), 0,
-                         "Error: There should be no finished subs.")
-
-        injected = self.daofactory(classname = "Workflow.MarkInjectedWorkflows")
-        injected.execute(names = ["wf001", "wfBOGUS"], injected = True)
-
-        #Without timeout we still have a not-cleanout job
-        newFinishedDAO.execute(self.stateID)
-        finishedSubs = finishedDAO.execute()
-        self.assertEqual(len(finishedSubs), 0,
-                         "Error: There should be no finished subs.")
-
-        #Now put the timeout in the mix
-        newFinishedDAO.execute(self.stateID, timeOut = 3)
-        finishedSubs = finishedDAO.execute()
-
-        self.assertEqual(len(finishedSubs), 1,
-                         "Error: There should be one finished subs.")
-        self.assertEqual(finishedSubs[0]["id"], testSubscription["id"],
-                         "Error: Wrong finished subscription.")
-
-        return
-
-    def testGetAndMarkNewFinishedSubscriptionsParentage(self):
-        """
-        _testGetAndMarkNewFinishedSubscriptionsTimeout_
-
-        Verify that the finished subscriptions DAO can handle the scenario
-        when an input file for a subscription which matches all the criteria
-        to be defined as finished, is the parent of a file in another fileset
-        from another workflow. Therefore the subscription should not be marked
-        as finished yet.
-        """
-
-        #Let's get the building blocks
-        elements = self.createParentageScenario()
-
-        #We want to "finish" the supscription 1 first
-        workflow1 = elements['Workflows'][0]
-        injected = self.daofactory(classname = "Workflow.MarkInjectedWorkflows")
-        injected.execute(names = [workflow1.name], injected = True)
-
-        fileset1 = elements['Filesets'][0]
-        fileset1.markOpen(False)
-
-        (fileA, fileB) = elements['Files'][:2]
-        subscription1 = elements['Subscriptions'][0]
-        subscription1.completeFiles([fileA, fileB])
-
-        newFinishedDAO = self.daofactory(classname = "Subscriptions.GetAndMarkNewFinishedSubscriptions")
-        finishedDAO = self.daofactory(classname = "Subscriptions.GetFinishedSubscriptions")
-        newFinishedDAO.execute(self.stateID)
-        finishedSubs = finishedDAO.execute()
-
-        #Marking the subscription 1 as finished would trigger the deletion of
-        #file B which is an error since it is the parent of C.
-        self.assertEqual(len(finishedSubs), 0,
-                         "Error: There should be no finished subs.")
-
-        #Now let's finish the second subscription
-        workflow2 = elements['Workflows'][1]
-        injected.execute(names = [workflow2.name], injected = True)
-
-        fileset2 = elements['Filesets'][1]
-        fileset2.markOpen(False)
-
-        fileC = elements['Files'][2]
-        subscription2 = elements['Subscriptions'][1]
-        subscription2.completeFiles([fileC])
-
-        #This first cycle only the second subscription should be picked up
-        newFinishedDAO.execute(self.stateID)
-        finishedSubs = finishedDAO.execute()
-
-        self.assertEqual(len(finishedSubs), 1,
-                         "Error: There should be one finished sub.")
-        self.assertEqual(finishedSubs[0]['id'], subscription2['id'],
-                         "Error: The finished sub is not the right one")
-
-        #After another pass we pick up the first subscription
-        newFinishedDAO.execute(self.stateID)
-        finishedSubs = finishedDAO.execute()
-
-        self.assertEqual(len(finishedSubs), 2,
-                         "Error: There should be two finished subs.")
 
     def testWhitelistBlacklist(self):
         """
@@ -1940,8 +1816,6 @@ class SubscriptionTest(unittest.TestCase):
         self.assertEqual(test2['type'], 'newType')
 
         return
-
-
 
 if __name__ == "__main__":
     unittest.main()
